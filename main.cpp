@@ -10,15 +10,26 @@
 #include <sstream>
 #include <string>
 #include <boost/program_options.hpp>
+#include <boost/filesystem.hpp>
+#include <blink/raster/utility.h>
+#include <blink/iterator/zip_range.h>
 #include "CCCALM.hpp"
+#include "InundateLandscape.h"
+#include "ReadInControlsAndGuages.h"
+#include "ReadGraphsFromFile.h"
+#include "CalcDamage.hpp"
 
 int main(int argc, const char * argv[]) {
     // insert code here...
     namespace prog_opt = boost::program_options;
+    namespace raster_it = blink::iterator;
+    namespace raster_util = blink::raster;
+    
     
     //	    namespace raster_util = blink::raster;
     
-    fs::path run_path = filesys::current_path();
+    namespace fs = boost::filesystem;
+    fs::path run_path = fs::current_path();
     
     /**********************************/
     /*        Program options         */
@@ -47,6 +58,7 @@ int main(int argc, const char * argv[]) {
     std::string channel_graph_file;
     std::string controls_file("no_file");
     std::string guage_stem;
+    std::string mask_file;
     //	bool do_print = false;
     //	std::string file_print;
     //    unsigned int trim_level;
@@ -73,6 +85,7 @@ int main(int argc, const char * argv[]) {
     ("dem-map,d", prog_opt::value<std::string>(&dem_file), "path of the gdal capatible elevation data file")
     //        ("flow-dir-map,i", prog_opt::value<std::string>(&fd_file), "path of the gdal capatible flow direction data file")
     ("hydro-paths-file,t", prog_opt::value<std::string>(&hydro_paths_file)->default_value("hydro-paths.tif"), "path of the output map where each pixel is assigned the location on channel that the pixel is hydrologically connected to ")
+    ("mask,m", prog_opt::value<std::string>(&mask_file)->default_value("mask.tiff"), "Path to the mask file - no losses where value = 0 in this mask as this is where the water should be -= e.g. in the channel etc")
     ("channel-graph,g", prog_opt::value<std::string>(&channel_graph_file), "path of the graphml representation of the channel")
     ("climate-sc,c", prog_opt::value<std::string>(&sclimate_sc), "path of text file with guage location and levels, takes precedence over channel graph")
     ("guages-stem,a", prog_opt::value<std::string>(&guage_stem), "path of the directory where the guages files are located")
@@ -110,12 +123,13 @@ int main(int argc, const char * argv[]) {
     fs::path channel_graph_path(channel_graph_file);
     fs::path dem_file_path(dem_file);
     //	fs::path changes_file_path(changes_file);
-    fs::path guage_table_path(guage_file);
+    fs::path guage_table_path(guage_stem);
     //  fs::path fd_file_path(fd_file);
     fs::path hydro_paths_file_path(hydro_paths_file);
     fs::path output_file_path(output_file);
     fs::path controls_file_path(controls_file);
     fs::path guages_stem_path(guage_stem);
+    fs::path mask_path(mask_file);
     
     // Check file exists
     if (!fs::exists(channel_graph_path))
@@ -142,10 +156,18 @@ int main(int argc, const char * argv[]) {
         return (EXIT_FAILURE);
     }
     
-    if (!fs::exists(guage_stem_path))
+    if (!fs::exists(guages_stem_path))
     {
         std::stringstream ss;
-        ss << guage_stem_path << " does not exist";
+        ss << guages_stem_path << " does not exist";
+        throw std::runtime_error(ss.str());
+        return (EXIT_FAILURE);
+    }
+    
+    if (!fs::exists(mask_path))
+    {
+        std::stringstream ss;
+        ss << mask_path << " does not exist";
         throw std::runtime_error(ss.str());
         return (EXIT_FAILURE);
     }
@@ -184,27 +206,33 @@ int main(int argc, const char * argv[]) {
     auto hydro_connect = raster_util::open_gdal_raster<int>(hydro_paths_file_path.string(), GA_ReadOnly);
     auto inundation = raster_util::create_gdal_raster_from_model<double>(output_file, dem);
     const_cast<GDALRasterBand *>(inundation.get_gdal_band())->SetNoDataValue(0.0);
+    auto mask_map = raster_util::open_gdal_raster<int>(mask_path, GA_ReadOnly);
     
     
     
     std::vector<int> aris = {20, 50, 100, 200, 500, 1000};
-    std::vector<freq> freqs(aris.size);
+    std::vector<double> freqs(aris.size());
     for (int i = 0; i < aris.size(); ++i) {
         freqs[i] = 1 / double(aris[i]);
     }
     
     std::vector<double> risk_by_year;
+    
+    fs::path pv_risk_map_file = run_path / ("pv_risk.tif");
+    DoubleRaster pv_risk_raster = raster_util::create_gdal_raster_from_model<double>(pv_risk_map_file, dem);
 
-    for (int step = 0; i < numSteps; ++i)
+    for (int step = 0; step < numSteps; ++step)
     {
-        auto landuse_map = stepCCCALM(1);
+        IntRaster& landuse_map = stepCCCALM(1);
         std::vector<DoubleRaster> loss_maps(6);
-        // Calculate Hazard, generating hazard map
-        for(int ari = 0; i < aris.size(); ++i)
+//        
+//        
+//        // Calculate Hazard, generating hazard map
+        for(int ari = 0; ari < aris.size(); ++ari)
         {
-            
+//
             GuagesSPtr guages;
-            guage_table_path = guage_stem_path / (std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".txt");
+            guage_table_path = guages_stem_path / (std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".txt");
             if (!fs::exists(guage_table_path))
             {
                 std::stringstream ss;
@@ -213,24 +241,28 @@ int main(int argc, const char * argv[]) {
                 return (EXIT_FAILURE);
             }
             guages = readInGuages(guage_table_path);
-            
-            output_file_path = run_path / "inundation_" + (std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".tif")
+//
+            output_file_path = run_path / ("inundation_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".tif");
             auto inundation = raster_util::create_gdal_raster_from_model<double>(output_file_path, dem);
             const_cast<GDALRasterBand *>(inundation.get_gdal_band())->SetNoDataValue(0.0);
             inundateLandscape(inundation, dem, hydro_connect, channel_grph, guages, controls);
             loss_maps[ari] = raster_util::create_gdal_raster_from_model<double>(output_file_path, dem);
-            calcLosses(inundation, landuse, loss_maps[ari]);
+            calcNetLosses(inundation, mask_map, landuse_map, loss_maps[ari]);
         }
-        
+    
         
         // create a raster data set, with same dimensions as map1
-        auto risk_raster = raster_util::create_gdal_raster_from_model<double>(risk_raster_file, dem);
-        risk_raster.setNoDataValue(0.0);
+        fs::path risk_raster_file = run_path / ("risk_" + std::to_string(step) + ".tif");
+        DoubleRaster risk_raster = raster_util::create_gdal_raster_from_model<double>(risk_raster_file, dem);
+        
+        
+        
+//        risk_raster.setNoDataValue(0.0);
         double net_risk = 0;
         
         double risk_i;
         
-        auto zip = raster_util::make_zip_range(std::ref(loss_maps[0]), std::ref(loss_maps[1]), std::ref(loss_maps[2]), std::ref(loss_maps[3]), std::ref(loss_maps[4]), std::ref(loss_maps[5]), std::ref(risk_raster));
+        auto zip = raster_it::make_zip_range(std::ref(loss_maps[0]), std::ref(loss_maps[1]), std::ref(loss_maps[2]), std::ref(loss_maps[3]), std::ref(loss_maps[4]), std::ref(loss_maps[5]), std::ref(risk_raster), std::ref(pv_risk_raster));
         for (auto i : zip)
         {
             const double & loss1 = std::get<0>(i);
@@ -240,13 +272,14 @@ int main(int argc, const char * argv[]) {
             const double & loss5 = std::get<4>(i);
             const double & loss6 = std::get<5>(i);
             auto & risk = std::get<6>(i);
+            auto & pv_risk = std::get<7>(i);
             
-            const double exp_loss1 = freq[0] * loss1;
-            const double exp_loss2 = freq[1] * loss2;
-            const double exp_loss3 = freq[2] * loss3;
-            const double exp_loss4 = freq[3] * loss4;
-            const double exp_loss5 = freq[4] * loss5;
-            const double exp_loss6 = freq[5] * loss6;
+            const double exp_loss1 = freqs[0] * loss1;
+            const double exp_loss2 = freqs[1] * loss2;
+            const double exp_loss3 = freqs[2] * loss3;
+            const double exp_loss4 = freqs[3] * loss4;
+            const double exp_loss5 = freqs[4] * loss5;
+            const double exp_loss6 = freqs[5] * loss6;
             
 //            risk_i = ( (0     + exp_loss1) * std::abs(1       - freq[0])
 //                       (exp_loss1 + exp_loss2) * std::abs(freq[0] - freq[1]) +
@@ -268,6 +301,7 @@ int main(int argc, const char * argv[]) {
             
             risk = risk_i;
             net_risk += risk_i;
+            pv_risk += risk_i;
         }
         
         risk_by_year.push_back(net_risk);
