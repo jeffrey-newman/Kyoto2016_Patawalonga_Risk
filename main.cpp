@@ -18,6 +18,7 @@
 #include "ReadInControlsAndGuages.h"
 #include "ReadGraphsFromFile.h"
 #include "CalcDamage.hpp"
+#include "AggregateMap.h"
 
 int main(int argc, const char * argv[]) {
     // insert code here...
@@ -111,7 +112,7 @@ int main(int argc, const char * argv[]) {
 //    std::cout << "************************************" << std::endl;
 //    std::cout << "Constrained CA for land-use dynamics" << std::endl;
     
-    initialiseCCCALM(project_path, parameter_path, device_id);
+    initialiseCCCALM(project_path, parameter_path, numSteps, device_id );
     setVerbose();
     
     
@@ -204,8 +205,8 @@ int main(int argc, const char * argv[]) {
     
     auto dem = raster_util::open_gdal_raster<double>(dem_file_path.string(), GA_ReadOnly);
     auto hydro_connect = raster_util::open_gdal_raster<int>(hydro_paths_file_path.string(), GA_ReadOnly);
-    auto inundation = raster_util::create_gdal_raster_from_model<double>(output_file, dem);
-    const_cast<GDALRasterBand *>(inundation.get_gdal_band())->SetNoDataValue(0.0);
+//    auto inundation = raster_util::create_gdal_raster_from_model<double>(output_file, dem);
+    
     auto mask_map = raster_util::open_gdal_raster<int>(mask_path, GA_ReadOnly);
     
     
@@ -219,12 +220,17 @@ int main(int argc, const char * argv[]) {
     std::vector<double> risk_by_year;
     
     fs::path pv_risk_map_file = run_path / ("pv_risk.tif");
-    DoubleRaster pv_risk_raster = raster_util::create_gdal_raster_from_model<double>(pv_risk_map_file, dem);
+    DoubleRaster pv_risk_raster;
 
     for (int step = 0; step < numSteps; ++step)
     {
         IntRaster& landuse_map = stepCCCALM(1);
         std::vector<DoubleRaster> loss_maps(6);
+        
+        if (step == 0)
+        {
+          pv_risk_raster  = raster_util::create_gdal_raster_from_model<double>(pv_risk_map_file, dem);
+        }
 //        
 //        
 //        // Calculate Hazard, generating hazard map
@@ -232,7 +238,7 @@ int main(int argc, const char * argv[]) {
         {
 //
             GuagesSPtr guages;
-            guage_table_path = guages_stem_path / (std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".txt");
+            guage_table_path = guages_stem_path / (std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(aris[ari]) + ".txt");
             if (!fs::exists(guage_table_path))
             {
                 std::stringstream ss;
@@ -242,12 +248,18 @@ int main(int argc, const char * argv[]) {
             }
             guages = readInGuages(guage_table_path);
 //
-            output_file_path = run_path / ("inundation_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(ari) + ".tif");
+            fs::path output_file_path = run_path / ("inundation_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(aris[ari]) + ".tif");
+            fs::path output_file_path_depth = run_path / ("inundation_depth_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(aris[ari]) + ".tif");
+            fs::path output_file_path_prop = run_path / ("inundation_prop_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(aris[ari]) + ".tif");
+            fs::path loss_map_path = run_path / ("loss_" + std::to_string(2016+step) + "_" + sclimate_sc + "_ari" + std::to_string(aris[ari]) + ".tif");
             auto inundation = raster_util::create_gdal_raster_from_model<double>(output_file_path, dem);
             const_cast<GDALRasterBand *>(inundation.get_gdal_band())->SetNoDataValue(0.0);
             inundateLandscape(inundation, dem, hydro_connect, channel_grph, guages, controls);
-            loss_maps[ari] = raster_util::create_gdal_raster_from_model<double>(output_file_path, dem);
-            calcNetLosses(inundation, mask_map, landuse_map, loss_maps[ari]);
+            auto agg_map_depth = raster_util::create_gdal_raster_from_model<double>(output_file_path_depth, landuse_map);
+            auto agg_map_proportion = raster_util::create_gdal_raster_from_model<double>(output_file_path_prop, landuse_map);
+            aggregateMaps(inundation, landuse_map, agg_map_depth, agg_map_proportion);
+            loss_maps[ari] = raster_util::create_gdal_raster_from_model<double>(loss_map_path, landuse_map);
+            calcNetLosses(agg_map_depth, agg_map_proportion, mask_map, landuse_map, loss_maps[ari]);
         }
     
         

@@ -11,6 +11,7 @@ set(AHHZ_RASTER_ITERATOR "Not Specified" CACHE PATH "Path to Alex Hagen-Zanker's
 set(DAMAGE_SCANNER_SRC "Not Specified" CACHE PATH "Path to Damage Scanner sources")
 set(CCCALM_SRC "Not Specified" CACHE PATH "Path to CCCALM sources")
 set(INUNDATE_SRC "Not Specified" CACHE PATH "Path to inundate landscape sources")
+set(AGGREGATE_SRC  "Not Specified" CACHE PATH "Path to aggregate map sources")
 
 include_directories(${GDAL_INCLUDE_DIR} )
 include_directories(${Boost_INCLUDE_DIRS} )
@@ -20,7 +21,7 @@ include_directories(${DAMAGE_SCANNER_SRC} )
 include_directories(${CCCALM_SRC} )
 include_directories(${INUNDATE_SRC} )
 include_directories("${INUNDATE_SRC}/eigen")
-
+include_directories("${AGGREGATE_SRC}")
 
 SET (Sources
 		main.cpp
@@ -71,6 +72,17 @@ file(GLOB_RECURSE ExternalDependancies
  "${INUNDATE_SRC}/IsChannel.cpp"
  "${INUNDATE_SRC}/PrintGraphsToFile.cpp"
  "${INUNDATE_SRC}/RasterCoordinates.cpp"
+ 
+ 
+ "${AGGREGATE_SRC}/Neighbourhood.h"
+ "${AGGREGATE_SRC}/RasterCoordinates.h"
+ "${AGGREGATE_SRC}/Types.h"
+ "${AGGREGATE_SRC}/AggregateMap.cpp"
+ "${AGGREGATE_SRC}/Neighbourhood_Impl.cpp"
+ "${AGGREGATE_SRC}/Neighbourhood.cpp"
+ "${AGGREGATE_SRC}/RasterCoordinates.cpp"
+ "${AGGREGATE_SRC}/AggregateMap.h"
+
  )
 
 
